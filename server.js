@@ -70,113 +70,131 @@ async function fetchStravaActivities() {
   }
 }
 async function saveActivitiesToDB(activities) {
-    const client = await pool.connect();
-    try {
-        for (const activity of activities) {
-            const {
-                athlete,
-                name,
-                distance,  
-                moving_time,
-                elapsed_time,
-                total_elevation_gain,
-                type: activity_type,
-                sport_type,
-                workout_type,
-            } = activity;
+  const client = await pool.connect();
+  try {
+    for (const activity of activities) {
+      const {
+        athlete,
+        name,
+        distance,
+        moving_time,
+        elapsed_time,
+        total_elevation_gain,
+        type: activity_type,
+        sport_type,
+        workout_type,
+      } = activity;
 
-            const athlete_firstname = athlete.firstname;
-            const athlete_lastname = athlete.lastname;
-            const activity_name = name;
+      const athlete_firstname = athlete.firstname;
+      const athlete_lastname = athlete.lastname;
+      const activity_name = name;
 
-            const checkAthleteQuery = `
-                SELECT id FROM athletes WHERE firstname = $1 AND lastname = $2
-            `;
-            const checkAthleteValues = [athlete_firstname, athlete_lastname];
+      // --- FILTER SPORT TYPE ---
+      const allowedSports = [
+        'Ride',
+        'MountainBikeRide',
+        'GravelRide',
+        'EBikeRide',
+        'EMountainBikeRide',
+        'Velomobile',
+      ];
+      if (!allowedSports.includes(sport_type)) {
+        console.log(`Skipped activity "${activity_name}" because sport_type "${sport_type}" is not allowed.`);
+        continue;
+      }
 
-            const checkAthleteResult = await client.query(checkAthleteQuery, checkAthleteValues);
-            let athlete_id;
+      // --- CALCULATE SPEED (in km/h) ---
+      const speed = moving_time > 0 ? (distance * 3.6) / moving_time : null;
+      if (speed === null || speed < 5 || speed > 35) {
+        console.log(`Skipped activity "${activity_name}" due to unrealistic speed (${speed?.toFixed(2)} km/h).`);
+        continue;
+      }
 
-            if (checkAthleteResult.rows.length > 0) {
-                athlete_id = checkAthleteResult.rows[0].id;
-            } else {
-                const insertAthleteQuery = `
-                    INSERT INTO athletes (firstname, lastname)
-                    VALUES ($1, $2)
-                    RETURNING id
-                `;
-                const insertAthleteValues = [athlete_firstname, athlete_lastname];
+      const checkAthleteQuery = `
+        SELECT id FROM athletes WHERE firstname = $1 AND lastname = $2
+      `;
+      const checkAthleteValues = [athlete_firstname, athlete_lastname];
+      const checkAthleteResult = await client.query(checkAthleteQuery, checkAthleteValues);
+      let athlete_id;
 
-                const insertAthleteResult = await client.query(insertAthleteQuery, insertAthleteValues);
-                athlete_id = insertAthleteResult.rows[0].id; 
-            }
+      if (checkAthleteResult.rows.length > 0) {
+        athlete_id = checkAthleteResult.rows[0].id;
+      } else {
+        const insertAthleteQuery = `
+          INSERT INTO athletes (firstname, lastname)
+          VALUES ($1, $2)
+          RETURNING id
+        `;
+        const insertAthleteValues = [athlete_firstname, athlete_lastname];
+        const insertAthleteResult = await client.query(insertAthleteQuery, insertAthleteValues);
+        athlete_id = insertAthleteResult.rows[0].id;
+      }
 
-            const checkActivityQuery = `
-                SELECT id FROM club_activities 
-                WHERE id_athlete = $1 
-                AND distance = $2 
-                AND moving_time = $3 
-                AND elapsed_time = $4 
-                AND total_elevation_gain = $5
-            `;
-            const checkActivityValues = [
-                athlete_id, 
-                distance, 
-                moving_time, 
-                elapsed_time, 
-                total_elevation_gain
-            ];
+      const checkActivityQuery = `
+        SELECT id FROM club_activities
+        WHERE id_athlete = $1
+        AND distance = $2
+        AND moving_time = $3
+        AND elapsed_time = $4
+        AND total_elevation_gain = $5
+      `;
+      const checkActivityValues = [
+        athlete_id,
+        distance,
+        moving_time,
+        elapsed_time,
+        total_elevation_gain
+      ];
+      const checkActivityResult = await client.query(checkActivityQuery, checkActivityValues);
 
-            const checkActivityResult = await client.query(checkActivityQuery, checkActivityValues);
+      if (checkActivityResult.rows.length > 0) {
+        console.log(`Activity already exists for athlete "${athlete_firstname} ${athlete_lastname}".`);
+        continue;
+      }
 
-            if (checkActivityResult.rows.length > 0) {
-                console.log(`Activity with distance ${distance}, moving time ${moving_time}, elapsed time ${elapsed_time}, and elevation gain ${total_elevation_gain} already exists for athlete "${athlete_firstname} ${athlete_lastname}".`);
-                continue; 
-            }
+      const carbon_saving = (distance / 1000) * 0.24;
+      const datetimeUTC = new Date().toISOString();
 
-            // Convert distance from meters to kilometers
-            const carbon_saving = (distance / 1000) * 0.24;
-            const datetimeUTC = new Date().toISOString();
+      const insertQuery = `
+        INSERT INTO club_activities (
+          id_athlete, athlete_firstname, athlete_lastname, activity_name, distance, moving_time,
+          elapsed_time, total_elevation_gain, activity_type, sport_type, workout_type, date, carbon_saving, datetime, speed
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz, $15)
+      `;
 
-            const query = `
-                INSERT INTO club_activities (
-                    id_athlete, athlete_firstname, athlete_lastname, activity_name, distance, moving_time, 
-                    elapsed_time, total_elevation_gain, activity_type, sport_type, workout_type, date, carbon_saving, datetime
-                )
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14::timestamptz)
-            `;
+      const values = [
+        athlete_id,
+        athlete_firstname,
+        athlete_lastname,
+        activity_name,
+        distance,
+        moving_time,
+        elapsed_time,
+        total_elevation_gain,
+        activity_type,
+        sport_type,
+        workout_type,
+        new Date(),
+        carbon_saving,
+        datetimeUTC,
+        speed
+      ];
 
-            const values = [
-                athlete_id,
-                athlete_firstname,
-                athlete_lastname,
-                activity_name,
-                distance,
-                moving_time,
-                elapsed_time,
-                total_elevation_gain,
-                activity_type,
-                sport_type,
-                workout_type,
-                new Date, 
-                carbon_saving,
-		datetimeUTC
-            ];
-
-            await client.query(query, values);
-            console.log (datetimeUTC);
-	    console.log(`Activity "${activity_name}" saved for athlete "${athlete_firstname} ${athlete_lastname}". Carbon saving: ${carbon_saving} kg.`);
-        }
-        console.log('Data successfully saved to the database.');
-    } catch (error) {
-        console.error('Error saving data to the database:', error);
-    } finally {
-        client.release();
+      await client.query(insertQuery, values);
+      console.log(`Saved: "${activity_name}" for ${athlete_firstname} ${athlete_lastname} — Speed: ${speed.toFixed(2)} km/h`);
     }
+
+    console.log('Data successfully saved to the database.');
+  } catch (error) {
+    console.error('Error saving data to the database:', error);
+  } finally {
+    client.release();
+  }
 }
 
-schedule.scheduleJob('*/10 * * * * *', async () => {
-// schedule.scheduleJob('*/15 * * * *', async () => {
+//schedule.scheduleJob('*/10 * * * * *', async () => {
+  schedule.scheduleJob('*/15 * * * *', async () => {
   console.log('Starting the sync process...');
   const activities = await fetchStravaActivities();
   if (activities.length > 0) {
